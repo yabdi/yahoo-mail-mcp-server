@@ -121,7 +121,7 @@ class YahooMailMCPServer {
                             properties: {
                                 query: {
                                     type: 'string',
-                                    description: 'Search term for subject or sender (can be empty for date-only searches)',
+                                    description: 'Search term. Sent as an IMAP header search over subject and sender, but Yahoo also matches message body text, so expect broader results than the subject/sender alone. Can be empty for date-only searches.',
                                     default: ''
                                 },
                                 count: {
@@ -136,7 +136,7 @@ class YahooMailMCPServer {
                                 },
                                 dateTo: {
                                     type: 'string',
-                                    description: 'Filter emails up to this date (ISO 8601 or RFC 2822 format)',
+                                    description: 'Filter emails up to, but NOT including, this date (IMAP BEFORE semantics). Pass the day after the last one you want. ISO 8601 or RFC 2822 format.',
                                     default: null
                                 },
                                 sender: {
@@ -517,6 +517,28 @@ class YahooMailMCPServer {
                     return;
                 }
 
+                // Nothing left to return. This has to happen before the
+                // clamping below: Math.max(1, ...) floors both ends to 1, so the
+                // startSeq > endSeq guard can never fire and the caller silently
+                // gets the oldest message instead of an empty page.
+                if (offset >= total) {
+                    imap.end();
+                    resolve({
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                emails: [],
+                                totalCount: total,
+                                offset: offset,
+                                limit: count,
+                                folder: folder,
+                                message: 'Offset exceeds available messages'
+                            }, null, 2)
+                        }]
+                    });
+                    return;
+                }
+
                 // Calculate range with offset
                 // If total=100, offset=10, count=10: fetch messages 81-90 (reversed for newest first)
                 const startSeq = Math.max(1, total - offset - count + 1);
@@ -543,7 +565,8 @@ class YahooMailMCPServer {
                 // Fetch with struct for attachments and size
                 const fetch = imap.seq.fetch(`${startSeq}:${endSeq}`, {
                     bodies: 'HEADER.FIELDS (FROM TO SUBJECT DATE)',
-                    struct: true
+                    struct: true,
+                    size: true
                 });
 
                 const emails = [];
@@ -554,7 +577,7 @@ class YahooMailMCPServer {
 
                     msg.on('body', (stream, info) => {
                         stream.on('data', (chunk) => {
-                            header += chunk.toString('ascii');
+                            header += chunk.toString('utf8');
                         });
                     });
 
@@ -746,7 +769,8 @@ class YahooMailMCPServer {
                     // Fetch details for these UIDs
                     const fetch = imap.fetch(limitedResults, {
                         bodies: 'HEADER.FIELDS (FROM TO SUBJECT DATE)',
-                        struct: true
+                        struct: true,
+                        size: true
                     });
 
                     const emails = [];
@@ -757,7 +781,7 @@ class YahooMailMCPServer {
 
                         msg.on('body', (stream, info) => {
                             stream.on('data', (chunk) => {
-                                header += chunk.toString('ascii');
+                                header += chunk.toString('utf8');
                             });
                         });
 
@@ -940,24 +964,29 @@ class YahooMailMCPServer {
                     return;
                 }
 
-                const source = uids.join(',');
-
+                // Pass the array itself, never a joined string: node-imap
+                // validates a string source with parseInt(), which stops at the
+                // first comma and silently reduces the request to a single UID.
+                // It joins the array itself after validating each element.
+                //
                 // CRITICAL: Use imap.fetch() (NOT imap.seq.fetch) for UID-based fetch
-                const fetch = imap.fetch(source, {
+                const fetch = imap.fetch(uids, {
                     bodies: '',
-                    struct: true
+                    struct: true,
+                    size: true
                 });
 
                 const emails = [];
                 const foundUIDs = new Set();
+                const parsing = [];
 
                 fetch.on('message', (msg, seqno) => {
-                    let buffer = '';
+                    const chunks = [];
                     let attrs = null;
 
                     msg.on('body', (stream, info) => {
                         stream.on('data', (chunk) => {
-                            buffer += chunk.toString('ascii');
+                            chunks.push(chunk);
                         });
                     });
 
@@ -967,25 +996,32 @@ class YahooMailMCPServer {
                     });
 
                     msg.once('end', () => {
-                        simpleParser(buffer, (err, parsed) => {
-                            if (err) {
-                                console.error('Error parsing email:', err);
-                                return;
-                            }
+                        // Hand mailparser the raw bytes so it can honour each
+                        // part's declared charset. Decoding to a string first
+                        // corrupts anything that is not plain ASCII.
+                        parsing.push(new Promise((settled) => {
+                            simpleParser(Buffer.concat(chunks), (err, parsed) => {
+                                if (err) {
+                                    console.error('Error parsing email:', err);
+                                    settled();
+                                    return;
+                                }
 
-                            emails.push({
-                                uid: attrs.uid,
-                                sequenceNumber: seqno,  // Still include for reference
-                                from: parsed.from?.text || 'Unknown',
-                                to: parsed.to?.text || 'Unknown',
-                                subject: parsed.subject || 'No Subject',
-                                date: parsed.date || 'Unknown Date',
-                                size: attrs.size || 0,
-                                flags: attrs.flags || [],
-                                hasAttachments: this.hasAttachments(attrs.struct),
-                                content: parsed.text || parsed.html || 'No content available'
+                                emails.push({
+                                    uid: attrs.uid,
+                                    sequenceNumber: seqno,  // Still include for reference
+                                    from: parsed.from?.text || 'Unknown',
+                                    to: parsed.to?.text || 'Unknown',
+                                    subject: parsed.subject || 'No Subject',
+                                    date: parsed.date || 'Unknown Date',
+                                    size: attrs.size || 0,
+                                    flags: attrs.flags || [],
+                                    hasAttachments: this.hasAttachments(attrs.struct),
+                                    content: parsed.text || parsed.html || 'No content available'
+                                });
+                                settled();
                             });
-                        });
+                        }));
                     });
                 });
 
@@ -994,8 +1030,12 @@ class YahooMailMCPServer {
                     reject(err);
                 });
 
-                fetch.once('end', () => {
+                fetch.once('end', async () => {
                     imap.end();
+
+                    // simpleParser is asynchronous and its callbacks run after
+                    // this event fires, so the results are not all in yet.
+                    await Promise.all(parsing);
 
                     // Check for missing UIDs
                     const missingUIDs = uids.filter(uid => !foundUIDs.has(uid));
