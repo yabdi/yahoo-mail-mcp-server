@@ -1,26 +1,26 @@
-# Credential sync — keep these three copies in step
+# Credentials — single source of truth: `.env`
 
-The Yahoo credentials (`YAHOO_EMAIL`, `YAHOO_APP_PASSWORD`) are needed in
-**three** places. All three must be updated together whenever the app password
-changes or is regenerated:
+The Yahoo credentials (`YAHOO_EMAIL`, `YAHOO_APP_PASSWORD`) live in **one
+place**: `.env` in this repo (gitignored, mode 0600). Everything else
+references it:
 
-| # | File | Used by |
-|---|---|---|
-| 1 | `.env` (repo root, gitignored, mode 0600) | Direct runs: `node server.js` from this repo (`dotenv` loads it) |
-| 2 | `~/.config/opencode/opencode.jsonc` → `mcp.yahoo-mail.environment` | opencode MCP launch |
-| 3 | `~/.dsh/profiles/web/cordis.patch.yml` → `mcp-yahoo-mail` env block | DeepSeek Harness MCP launch |
+| Component | How it gets the credentials |
+|---|---|
+| `.env` (repo root) | The source — `dotenv` loads it at startup |
+| `scripts/run-mcp.sh` | Runs the server from the repo root so `.env` is found; sets `DOTENV_CONFIG_QUIET=true` and `TRANSPORT_MODE=stdio` |
+| `~/.config/opencode/opencode.jsonc` → `mcp.yahoo-mail` | Points at `scripts/run-mcp.sh` — carries **no** credential copies |
+| `~/.dsh/profiles/web/cordis.patch.yml` → `mcp-yahoo-mail` | Same — points at `scripts/run-mcp.sh` |
 
 ## Rules
 
-- **Never commit the app password** — `.env` is gitignored; the two config
-  files live outside this repo, in the home dir. `git status` should never show
-  `.env`.
+- **Only edit `.env`** when the email or app password changes — the MCP
+  configs never need touching (they hold no credentials).
+- **Never commit the app password** — `.env` is gitignored; `git status`
+  should never show it.
 - Keep `.env` at mode `0600` (owner-only read).
-- If only one copy is updated, the other launchers silently keep using the old
-  password and auth fails with `[AUTHENTICATIONFAILED]` — update all three.
 - The app password is IMAP-scoped and revocable: regenerate at
   <https://login.yahoo.com/account/security> (requires two-step verification)
-  if it leaks or looks off, then update all three copies above.
+  if it leaks or looks off, then update `.env` (and nothing else).
 
 ## Deployment safety — stdio only (audit finding)
 
@@ -37,13 +37,14 @@ path is **dangerous by default** and must never be run without credentials:
   `127.0.0.1`).
 - OAuth tokens are `Math.random()`-based and never expire — fine only if you
   never use SSE at all.
-- `TRANSPORT_MODE` must stay `stdio` (the default; also set explicitly in the
-  MCP configs).
+- `TRANSPORT_MODE` stays `stdio` (set by `scripts/run-mcp.sh`).
 
 ## How the server is launched
 
-The MCP configs start the server with `TRANSPORT_MODE=stdio` via
-`node /home/yusuf.abdi/code/yahoo-mail-mcp-server/server.js`. The process env
-from the MCP config wins over `.env` (dotenv does not override existing env
-vars), so configs 2 and 3 are authoritative when launched by an agent; `.env`
-only matters for direct CLI runs.
+- **By an agent (opencode / DSH):** the MCP configs run
+  `bash scripts/run-mcp.sh`, which `cd`s to the repo root, sets
+  `DOTENV_CONFIG_QUIET=true` (dotenv v17 otherwise prints an `[dotenv]`
+  banner to **stdout**, which would pollute the MCP JSON-RPC stream) and
+  `TRANSPORT_MODE=stdio`, then `exec node server.js`. `dotenv` loads `.env`.
+- **Directly:** `node server.js` from the repo root (same effect, banner
+  included unless `DOTENV_CONFIG_QUIET=true` is set).
