@@ -39,6 +39,37 @@ path is **dangerous by default** and must never be run without credentials:
   never use SSE at all.
 - `TRANSPORT_MODE` stays `stdio` (set by `scripts/run-mcp.sh`).
 
+## Keeping the fork current — automated, audit-gated sync
+
+`sync-upstream.sh` (weekly cron, or manual) keeps this fork in step with
+upstream `jtokib/yahoo-mail-mcp-server` **without ever merging unvetted
+code**:
+
+1. Fast-forwards local `main` to the fork's `origin/main`.
+2. Fetches upstream; exits early when there is nothing new.
+3. **Pre-merge audit gate** — static scan of the incoming diff
+   (`audit-upstream.sh --range`): code-execution primitives
+   (eval/Function/child_process/exec), unexpected network hosts (allowlist:
+   `imap.mail.yahoo.com`, `login.yahoo.com`, `localhost`, npm/github hosts),
+   TLS-verification bypass, hardcoded credentials, base64 blobs, secrets in
+   the incoming commits.
+4. Stages the merge (`git merge --no-commit --no-ff`).
+5. **Post-merge audit gate** on the merged tree (`audit-upstream.sh
+   --worktree`): `npm install`, `npm audit` vs baseline (auto `npm audit
+   fix`; fail if still above), lockfile hygiene (registry.npmjs.org only, no
+   install scripts), `.env` untracked.
+6. Commits the merge (including any audit-fix lockfile changes), smoke-tests
+   the MCP stdio handshake, then pushes.
+
+Any gate failure aborts **before** the merge is committed or pushed — a bad
+upstream change never lands on the fork. Failures (and successes) notify via
+ntfy when `~/.config/gmail-inbox-watcher/config.json` exists; otherwise they
+land in `~/.local/share/yahoo-mail-mcp/sync.log`.
+
+Tuning: `AUDIT_MAX_HIGH` (default 3 — the unfixable deepmerge-ts chain),
+`AUDIT_MAX_CRITICAL` (default 0). Dry run: `./scripts/sync-upstream.sh
+--dry-run`.
+
 ## How the server is launched
 
 - **By an agent (opencode / DSH):** the MCP configs run
