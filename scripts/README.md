@@ -22,6 +22,24 @@ changes or is regenerated:
   <https://login.yahoo.com/account/security> (requires two-step verification)
   if it leaks or looks off, then update all three copies above.
 
+## Deployment safety — stdio only (audit finding)
+
+Security audit (2026-08, PASS-WITH-NOTES for local stdio): the **stdio
+transport is safe and is the only supported deployment**. The SSE / OAuth
+path is **dangerous by default** and must never be run without credentials:
+
+- `app.listen(port)` binds **all interfaces** (not localhost) even though the
+  log says `http://localhost:3000`, and `authenticateMCP` is a pass-through
+  when `OAUTH_CLIENT_ID`/`OAUTH_CLIENT_SECRET` are unset — any LAN peer or
+  website could open `/mcp/sse` and get full mailbox read/search/move/delete.
+- `docker-compose.yml` forces `TRANSPORT_MODE=sse` and publishes port 3000 —
+  **do not `docker-compose up`** without OAuth creds (and ideally bind
+  `127.0.0.1`).
+- OAuth tokens are `Math.random()`-based and never expire — fine only if you
+  never use SSE at all.
+- `TRANSPORT_MODE` must stay `stdio` (the default; also set explicitly in the
+  MCP configs).
+
 ## How the server is launched
 
 The MCP configs start the server with `TRANSPORT_MODE=stdio` via
