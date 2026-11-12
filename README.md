@@ -1,5 +1,10 @@
 # Yahoo Mail MCP Server
 
+> **This is a fork** (`yabdi/yahoo-mail-mcp-server`). Upstream is dormant
+> (last push 2026-03-28), so verified upstream PRs are adopted here directly —
+> see [`FORK-NOTES.md`](FORK-NOTES.md) for what is carried and why. Used by the
+> fiirso gateway (stdio, one child per user) and on the laptop.
+
 A Model Context Protocol (MCP) server that provides full email management for Yahoo Mail via IMAP. This server supports both local stdio transport (for Claude Desktop) and HTTP/SSE transport (for remote access via Claude.ai).
 
 ## Features
