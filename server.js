@@ -14,13 +14,21 @@ import { simpleParser } from 'mailparser';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import path from 'path';
 
 // Load environment variables from .env file (for local development).
+// Two deliberate choices:
+//  - explicit path: dotenv otherwise reads from cwd, which is not this file's
+//    directory when the server is spawned by an MCP client.
+//  - quiet: dotenv v17 prints its "injected env" banner to stdout, and stdout
+//    is reserved for JSON-RPC frames in stdio mode.
 // Skip loading when credentials are already injected via env — per-user
-// children launched by the fiirso-lite gateway pass YAHOO_EMAIL /
-// YAHOO_APP_PASSWORD directly and must not be overridden by a shared .env.
+// children launched by the fiirso gateway pass YAHOO_EMAIL /
+// YAHOO_APP_PASSWORD directly and must not be influenced by a shared .env.
 if (!process.env.YAHOO_EMAIL || !process.env.YAHOO_APP_PASSWORD) {
-  dotenv.config();
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  dotenv.config({ path: path.join(here, '.env'), quiet: true });
 }
 
 class YahooMailMCPServer {
