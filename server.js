@@ -15,8 +15,13 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
-// Load environment variables from .env file (for local development)
-dotenv.config();
+// Load environment variables from .env file (for local development).
+// Skip loading when credentials are already injected via env — per-user
+// children launched by the fiirso-lite gateway pass YAHOO_EMAIL /
+// YAHOO_APP_PASSWORD directly and must not be overridden by a shared .env.
+if (!process.env.YAHOO_EMAIL || !process.env.YAHOO_APP_PASSWORD) {
+  dotenv.config();
+}
 
 class YahooMailMCPServer {
     constructor() {
